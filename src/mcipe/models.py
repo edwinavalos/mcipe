@@ -87,10 +87,12 @@ class ParsedIngredient(BaseModel):
         """Human-readable representation."""
         parts = []
         if self.quantity:
+            qty_str = self._format_quantity(self.quantity)
             if self.quantity_max and self.quantity_max != self.quantity:
-                parts.append(f"{self.quantity}-{self.quantity_max}")
+                qty_max_str = self._format_quantity(self.quantity_max)
+                parts.append(f"{qty_str}-{qty_max_str}")
             else:
-                parts.append(str(self.quantity))
+                parts.append(qty_str)
         if self.unit:
             parts.append(self.unit)
         parts.append(self.name)
@@ -101,6 +103,13 @@ class ParsedIngredient(BaseModel):
         if self.optional:
             parts.append("(optional)")
         return " ".join(parts)
+
+    @staticmethod
+    def _format_quantity(qty: float) -> str:
+        """Format a quantity value, showing integers without decimals."""
+        if qty == int(qty):
+            return str(int(qty))
+        return f"{qty:.2f}".rstrip('0').rstrip('.')
 
 
 class Recipe(BaseModel):

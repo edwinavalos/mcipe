@@ -151,7 +151,9 @@ class URLScraper:
             ScraperError: If parsing fails
         """
         try:
-            scraper = scrape_html(html, org_url=url)
+            # Try with supported_only=False to enable wild mode for unknown sites
+            # This allows parsing JSON-LD from any site
+            scraper = scrape_html(html, org_url=url, supported_only=False)
         except Exception as e:
             raise ScraperError(f"Could not parse recipe from {url}: {e}") from e
 
