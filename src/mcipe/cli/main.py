@@ -18,7 +18,17 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from ..models import Recipe
-from ..scrapers import URLScraper, ScraperError, RecipeSearcher, RecipeSearchError
+from ..scrapers import (
+    URLScraper,
+    ScraperError,
+    RecipeSearcher,
+    RecipeSearchError,
+    is_nyt_url,
+    is_nyt_available,
+    NYTScraper,
+    NYTScraperError,
+    NYTAuthError,
+)
 from ..parsers import IngredientParser
 from ..storage import get_database
 from ..aggregators import GroceryAggregator
@@ -38,6 +48,30 @@ def parse_recipe_ingredients(recipe: Recipe) -> Recipe:
     parser = IngredientParser()
     recipe.ingredients = [parser.parse(raw) for raw in recipe.ingredients_raw]
     return recipe
+
+
+def _scrape_url(url: str) -> Recipe:
+    """
+    Scrape a recipe from a URL, using the appropriate scraper.
+
+    Automatically detects NYT Cooking URLs and uses the NYT scraper
+    if available and configured.
+    """
+    # Check if this is an NYT Cooking URL
+    if is_nyt_url(url):
+        if is_nyt_available():
+            scraper = NYTScraper()
+            return scraper.scrape(url)
+        else:
+            console.print(
+                "[yellow]NYT Cooking support not installed.[/yellow]\n"
+                "Install with: [bold]pip install mcipe[nyt][/bold]"
+            )
+            console.print("[dim]Falling back to generic scraper...[/dim]")
+
+    # Use generic scraper
+    with URLScraper() as scraper:
+        return scraper.scrape(url)
 
 
 @click.group()
@@ -96,9 +130,13 @@ def add_recipe(source: str, scale: float):
         progress.add_task("Fetching recipe...", total=None)
 
         try:
-            with URLScraper() as scraper:
-                recipe = scraper.scrape(source)
-        except ScraperError as e:
+            recipe = _scrape_url(source)
+        except NYTAuthError as e:
+            console.print(f"[red]NYT Authentication required.[/red]")
+            console.print("Run [bold]nytc auth[/bold] to configure your NYT Cooking credentials.")
+            console.print(f"[dim]{e}[/dim]")
+            return
+        except (ScraperError, NYTScraperError) as e:
             console.print(f"[red]Error: {e}[/red]")
             return
 
@@ -193,9 +231,12 @@ def search_recipe(query: tuple, scale: float, auto: bool):
         progress.add_task("Fetching recipe...", total=None)
 
         try:
-            with URLScraper() as scraper:
-                recipe = scraper.scrape(selected["url"])
-        except ScraperError as e:
+            recipe = _scrape_url(selected["url"])
+        except NYTAuthError as e:
+            console.print(f"[red]NYT Authentication required.[/red]")
+            console.print("Run [bold]nytc auth[/bold] to configure your NYT Cooking credentials.")
+            return
+        except (ScraperError, NYTScraperError) as e:
             console.print(f"[red]Error scraping recipe: {e}[/red]")
             return
 
@@ -472,9 +513,12 @@ def recipe_info(url: str):
         progress.add_task("Fetching recipe...", total=None)
 
         try:
-            with URLScraper() as scraper:
-                recipe = scraper.scrape(url)
-        except ScraperError as e:
+            recipe = _scrape_url(url)
+        except NYTAuthError as e:
+            console.print(f"[red]NYT Authentication required.[/red]")
+            console.print("Run [bold]nytc auth[/bold] to configure your NYT Cooking credentials.")
+            return
+        except (ScraperError, NYTScraperError) as e:
             console.print(f"[red]Error: {e}[/red]")
             return
 
@@ -539,6 +583,158 @@ def _display_recipe(recipe: Recipe, show_instructions: bool = False):
         console.print(f"\n[bold]Instructions:[/bold]")
         for i, step in enumerate(recipe.instructions, 1):
             console.print(f"  {i}. {step[:200]}{'...' if len(step) > 200 else ''}")
+
+
+# ============================================================================
+# NYT Cooking Commands
+# ============================================================================
+
+
+@cli.group("nyt")
+def nyt_group():
+    """NYT Cooking integration commands."""
+    pass
+
+
+@nyt_group.command("status")
+def nyt_status():
+    """Check NYT Cooking authentication status."""
+    if not is_nyt_available():
+        console.print("[yellow]NYT Cooking support not installed.[/yellow]")
+        console.print("Install with: [bold]pip install mcipe[nyt][/bold]")
+        return
+
+    # Try to check auth status
+    try:
+        from nytc.config import load_config, get_cookie
+
+        config = load_config()
+        cookie = get_cookie()
+
+        if cookie:
+            console.print("[green]✓ NYT Cooking authentication configured.[/green]")
+            if config.get("user_id"):
+                console.print(f"  User ID: {config['user_id']}")
+            console.print("\n[dim]To update credentials, run: nytc auth[/dim]")
+        else:
+            console.print("[yellow]NYT Cooking not authenticated.[/yellow]")
+            console.print("Run [bold]nytc auth[/bold] to configure your credentials.")
+    except Exception as e:
+        console.print(f"[red]Error checking auth status: {e}[/red]")
+
+
+@nyt_group.command("search")
+@click.argument("query", nargs=-1, required=True)
+def nyt_search(query: tuple):
+    """
+    Search NYT Cooking for recipes.
+
+    QUERY is what you want to cook.
+
+    Example:
+        mcipe nyt search chicken parmesan
+    """
+    if not is_nyt_available():
+        console.print("[yellow]NYT Cooking support not installed.[/yellow]")
+        console.print("Install with: [bold]pip install mcipe[nyt][/bold]")
+        return
+
+    query_str = " ".join(query)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task(f"Searching NYT Cooking for '{query_str}'...", total=None)
+
+        try:
+            scraper = NYTScraper()
+            results = scraper.search(query_str)
+        except NYTAuthError:
+            console.print("[red]NYT Authentication required.[/red]")
+            console.print("Run [bold]nytc auth[/bold] to configure your credentials.")
+            return
+        except NYTScraperError as e:
+            console.print(f"[red]Search error: {e}[/red]")
+            return
+
+    if not results:
+        console.print(f"[yellow]No recipes found for '{query_str}'[/yellow]")
+        return
+
+    console.print(f"\n[bold]Found {len(results)} recipes on NYT Cooking:[/bold]\n")
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Recipe")
+    table.add_column("Author")
+
+    for i, result in enumerate(results[:10], 1):
+        table.add_row(
+            str(i),
+            result.get("name", "Unknown"),
+            result.get("author", "-"),
+        )
+
+    console.print(table)
+    console.print("\n[dim]Use 'mcipe add <url>' to add a recipe.[/dim]")
+
+
+@nyt_group.command("saved")
+def nyt_saved():
+    """
+    List your saved recipes from NYT Cooking recipe box.
+
+    Requires authentication.
+    """
+    if not is_nyt_available():
+        console.print("[yellow]NYT Cooking support not installed.[/yellow]")
+        console.print("Install with: [bold]pip install mcipe[nyt][/bold]")
+        return
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task("Fetching saved recipes...", total=None)
+
+        try:
+            scraper = NYTScraper()
+            results = scraper.get_saved_recipes()
+        except NYTAuthError:
+            console.print("[red]NYT Authentication required.[/red]")
+            console.print("Run [bold]nytc auth[/bold] to configure your credentials.")
+            return
+        except NYTScraperError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return
+
+    if not results:
+        console.print("[yellow]No saved recipes found.[/yellow]")
+        return
+
+    console.print(f"\n[bold]Your NYT Cooking Recipe Box ({len(results)} recipes):[/bold]\n")
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Recipe")
+    table.add_column("Author")
+
+    for i, result in enumerate(results[:20], 1):
+        table.add_row(
+            str(i),
+            result.get("name", "Unknown"),
+            result.get("author", "-"),
+        )
+
+    console.print(table)
+
+    if len(results) > 20:
+        console.print(f"\n[dim]...and {len(results) - 20} more[/dim]")
+
+    console.print("\n[dim]Use 'mcipe add <url>' to add a recipe to your grocery list.[/dim]")
 
 
 if __name__ == "__main__":

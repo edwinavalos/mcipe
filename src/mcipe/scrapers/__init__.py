@@ -2,6 +2,14 @@
 
 from .url_scraper import URLScraper, scrape_recipe, ScraperError
 from .search import RecipeSearcher, search_recipes, search_and_scrape_recipe, RecipeSearchError
+from .nyt_scraper import (
+    NYTScraper,
+    NYTScraperError,
+    NYTAuthError,
+    is_nyt_available,
+    is_nyt_url,
+    scrape_nyt_recipe,
+)
 
 __all__ = [
     "URLScraper",
@@ -11,4 +19,10 @@ __all__ = [
     "search_recipes",
     "search_and_scrape_recipe",
     "RecipeSearchError",
+    "NYTScraper",
+    "NYTScraperError",
+    "NYTAuthError",
+    "is_nyt_available",
+    "is_nyt_url",
+    "scrape_nyt_recipe",
 ]

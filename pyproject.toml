@@ -43,6 +43,9 @@ dev = [
 search = [
     "duckduckgo-search>=4.0.0",
 ]
+nyt = [
+    "nytc @ git+https://github.com/atmz/nytccli.git",
+]
 
 [project.scripts]
 mcipe = "mcipe.cli.main:cli"
