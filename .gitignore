@@ -60,3 +60,9 @@ Thumbs.db
 *.pem
 credentials.json
 token.json
+
+# NYT Cooking credentials (normally at ~/.config/nytc/)
+nytc/
+.nytc/
+config.json
+**/nytc/config.json
