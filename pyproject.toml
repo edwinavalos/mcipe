@@ -46,6 +46,12 @@ search = [
 nyt = [
     "nytc @ git+https://github.com/atmz/nytccli.git",
 ]
+gkeep = [
+    "gkeepapi>=0.16.0",
+]
+all = [
+    "mcipe[nyt,gkeep,search]",
+]
 
 [project.scripts]
 mcipe = "mcipe.cli.main:cli"

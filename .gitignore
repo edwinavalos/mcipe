@@ -64,5 +64,9 @@ token.json
 # NYT Cooking credentials (normally at ~/.config/nytc/)
 nytc/
 .nytc/
-config.json
 **/nytc/config.json
+
+# Google Keep credentials (normally at ~/.config/mcipe/)
+gkeep_config.json
+gkeep_state.json
+**/mcipe/gkeep_*.json

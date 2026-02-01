@@ -484,12 +484,19 @@ def list_connectors():
     table = Table(show_header=True, header_style="bold")
     table.add_column("Name")
     table.add_column("Description")
+    table.add_column("Status")
 
     for c in connectors:
-        table.add_row(c["display_name"], c["description"])
+        status = "[green]Ready[/green]"
+        if c["name"] == "googlekeep":
+            from ..connectors.google_keep import load_gkeep_config
+            config = load_gkeep_config()
+            if not config.get("email"):
+                status = "[yellow]Not configured[/yellow]"
+        table.add_row(c["display_name"], c["description"], status)
 
     console.print(table)
-    console.print("\n[dim]More connectors coming soon (Google Keep, etc.)[/dim]")
+    console.print("\n[dim]Use 'mcipe gkeep auth' to configure Google Keep.[/dim]")
 
 
 # ============================================================================
@@ -735,6 +742,266 @@ def nyt_saved():
         console.print(f"\n[dim]...and {len(results) - 20} more[/dim]")
 
     console.print("\n[dim]Use 'mcipe add <url>' to add a recipe to your grocery list.[/dim]")
+
+
+# ============================================================================
+# Google Keep Commands
+# ============================================================================
+
+
+@cli.group("gkeep")
+def gkeep_group():
+    """Google Keep integration commands."""
+    pass
+
+
+@gkeep_group.command("status")
+def gkeep_status():
+    """Check Google Keep authentication status."""
+    from ..connectors.google_keep import is_gkeep_available, load_gkeep_config
+
+    if not is_gkeep_available():
+        console.print("[yellow]Google Keep support not installed.[/yellow]")
+        console.print("Install with: [bold]pip install mcipe[gkeep][/bold]")
+        return
+
+    config = load_gkeep_config()
+
+    if config.get("email"):
+        console.print("[green]✓ Google Keep authentication configured.[/green]")
+        console.print(f"  Email: {config['email']}")
+        console.print("\n[dim]To update credentials, run: mcipe gkeep auth[/dim]")
+    else:
+        console.print("[yellow]Google Keep not configured.[/yellow]")
+        console.print("Run [bold]mcipe gkeep auth[/bold] to set up authentication.")
+
+
+@gkeep_group.command("auth")
+def gkeep_auth():
+    """
+    Configure Google Keep authentication.
+
+    You'll need:
+    1. Your Google account email
+    2. A master token (app password if 2FA is enabled)
+
+    To get an app password:
+    1. Go to https://myaccount.google.com/apppasswords
+    2. Create a new app password for "gkeepapi"
+    3. Use that password as your master token
+    """
+    from ..connectors.google_keep import (
+        is_gkeep_available,
+        save_gkeep_config,
+        GoogleKeepConnector,
+        GoogleKeepAuthError,
+    )
+
+    if not is_gkeep_available():
+        console.print("[yellow]Google Keep support not installed.[/yellow]")
+        console.print("Install with: [bold]pip install mcipe[gkeep][/bold]")
+        return
+
+    console.print("[bold]Google Keep Authentication Setup[/bold]\n")
+    console.print("You'll need your Google account email and a master token.")
+    console.print("If you have 2FA enabled, create an App Password at:")
+    console.print("[link=https://myaccount.google.com/apppasswords]https://myaccount.google.com/apppasswords[/link]\n")
+
+    email = click.prompt("Google account email")
+    master_token = click.prompt("Master token (app password)", hide_input=True)
+
+    # Test the credentials
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task("Testing authentication...", total=None)
+
+        try:
+            config = {"email": email, "master_token": master_token}
+            connector = GoogleKeepConnector(config)
+            connector.authenticate()
+        except GoogleKeepAuthError as e:
+            console.print(f"[red]Authentication failed: {e}[/red]")
+            console.print("\nPlease check your credentials and try again.")
+            return
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return
+
+    # Save credentials
+    save_gkeep_config(config)
+    console.print("\n[green]✓ Authentication successful![/green]")
+    console.print("Credentials saved to ~/.config/mcipe/gkeep_config.json")
+    console.print("\nYou can now push grocery lists to Google Keep with:")
+    console.print("  [bold]mcipe gkeep push[/bold]")
+
+
+@gkeep_group.command("push")
+@click.option("--name", "-n", default=None, help="Name for the Google Keep list")
+@click.option("--update", "-u", is_flag=True, help="Update existing list with same name")
+def gkeep_push(name: Optional[str], update: bool):
+    """
+    Push the current grocery list to Google Keep.
+
+    Creates a new checklist note in Google Keep with all items
+    organized by category.
+
+    Examples:
+        mcipe gkeep push
+        mcipe gkeep push --name "Weekend Shopping"
+        mcipe gkeep push --update  # Update existing list
+    """
+    from ..connectors.google_keep import (
+        is_gkeep_available,
+        GoogleKeepConnector,
+        GoogleKeepError,
+        GoogleKeepAuthError,
+    )
+
+    if not is_gkeep_available():
+        console.print("[yellow]Google Keep support not installed.[/yellow]")
+        console.print("Install with: [bold]pip install mcipe[gkeep][/bold]")
+        return
+
+    db = get_db()
+    recipes = db.get_recipes_in_session()
+
+    if not recipes:
+        console.print("[yellow]No recipes in current session.[/yellow]")
+        console.print("Use 'mcipe add <url>' to add recipes first.")
+        return
+
+    # Generate grocery list
+    aggregator = GroceryAggregator()
+    grocery_list = aggregator.aggregate(recipes)
+
+    if name:
+        grocery_list.name = name
+
+    if not grocery_list.items:
+        console.print("[yellow]No ingredients to push.[/yellow]")
+        return
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task("Connecting to Google Keep...", total=None)
+
+        try:
+            connector = GoogleKeepConnector()
+            connector.authenticate()
+        except GoogleKeepAuthError:
+            console.print("[red]Google Keep authentication required.[/red]")
+            console.print("Run [bold]mcipe gkeep auth[/bold] to set up authentication.")
+            return
+        except GoogleKeepError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return
+
+        # Check for existing list
+        if update:
+            progress.add_task("Looking for existing list...", total=None)
+            existing_id = connector.find_list(grocery_list.name)
+            if existing_id:
+                progress.add_task("Updating existing list...", total=None)
+                try:
+                    connector.sync(grocery_list, existing_id)
+                    console.print(f"\n[green]✓ Updated '{grocery_list.name}' in Google Keep![/green]")
+                    console.print(f"  Items: {len(grocery_list.items)}")
+                    return
+                except GoogleKeepError as e:
+                    console.print(f"[yellow]Could not update existing list: {e}[/yellow]")
+                    console.print("Creating a new list instead...")
+
+        progress.add_task("Creating list in Google Keep...", total=None)
+
+        try:
+            note_id = connector.export(grocery_list)
+        except GoogleKeepError as e:
+            console.print(f"[red]Failed to create list: {e}[/red]")
+            return
+
+    console.print(f"\n[green]✓ Created '{grocery_list.name}' in Google Keep![/green]")
+    console.print(f"  Items: {len(grocery_list.items)}")
+    console.print(f"  Recipes: {len(recipes)}")
+    console.print("\n[dim]Open Google Keep to see your shopping list.[/dim]")
+
+
+@gkeep_group.command("lists")
+def gkeep_lists():
+    """
+    Show recent lists in Google Keep.
+
+    Lists all checklist notes from your Google Keep account.
+    """
+    from ..connectors.google_keep import (
+        is_gkeep_available,
+        GoogleKeepConnector,
+        GoogleKeepError,
+        GoogleKeepAuthError,
+    )
+    import gkeepapi
+    from gkeepapi import node as keep_node
+
+    if not is_gkeep_available():
+        console.print("[yellow]Google Keep support not installed.[/yellow]")
+        console.print("Install with: [bold]pip install mcipe[gkeep][/bold]")
+        return
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task("Fetching lists from Google Keep...", total=None)
+
+        try:
+            connector = GoogleKeepConnector()
+            connector.authenticate()
+            connector.keep.sync()
+        except GoogleKeepAuthError:
+            console.print("[red]Google Keep authentication required.[/red]")
+            console.print("Run [bold]mcipe gkeep auth[/bold] to set up authentication.")
+            return
+        except GoogleKeepError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return
+
+    # Get all lists
+    lists = []
+    for note in connector.keep.all():
+        if isinstance(note, keep_node.List) and not note.trashed:
+            checked = sum(1 for item in note.items if item.checked)
+            total = len(list(note.items))
+            lists.append({
+                "title": note.title or "(Untitled)",
+                "checked": checked,
+                "total": total,
+            })
+
+    if not lists:
+        console.print("[yellow]No lists found in Google Keep.[/yellow]")
+        return
+
+    console.print(f"\n[bold]Your Google Keep Lists ({len(lists)}):[/bold]\n")
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Title")
+    table.add_column("Progress", justify="right")
+
+    for i, lst in enumerate(lists[:20], 1):
+        progress_str = f"{lst['checked']}/{lst['total']}"
+        table.add_row(str(i), lst["title"], progress_str)
+
+    console.print(table)
+
+    if len(lists) > 20:
+        console.print(f"\n[dim]...and {len(lists) - 20} more[/dim]")
 
 
 if __name__ == "__main__":
